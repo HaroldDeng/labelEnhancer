@@ -1,0 +1,10 @@
+/imgs
+/raw_data
+/tmp
+/one
+/two
+/__pycache__
+/out*
+/test*
+*.png
+*.jpg

@@ -1,15 +1,11 @@
 import math
 import random
-from shapely.geometry import Polygon, LineString, Point, box
+from shapely.geometry import Polygon, LineString, Point, box, MultiPolygon
 import copy
 import re
 import numpy
-from PIL import Image
-from PIL import ImageDraw
-from typing import Union
-from typing import List
-from typing import Dict
-from typing import Tuple
+from PIL import Image, ImageDraw
+from typing import Union, List, Dict, Tuple
 
 class PixelUtil:
     def __init__(arg):
@@ -158,7 +154,7 @@ class PixelFactory:
         return self._algo.noise(px, snr, n_type)
 
     def pasteRegion(self, bg: Image.Image, bgMk: List[Dict],
-        fg: Image.Image, fgMk: List[Dict], pos: Tuple) -> Tuple:
+        fg: Image.Image, fgMk: Dict, pos: Tuple) -> Tuple:
         """
         paste `fg` images in `bg` at `pos` with given mode
         Return one or a iterable of tules contains final image and markings
@@ -172,33 +168,46 @@ class PixelFactory:
         fg
             foreground, PIL Image in RGBA mode
         fgMk
-            foreground markings
+            foreground marking
         pos
             a tulpes of corrdinate
         """
-        resPx = copy.copy(bg)
-        resMk = None
+        resPx = bg.copy()
+        resMk = []
         resPx.paste(fg, pos, fg.getchannel(3))
-        resPa = fgMk.copy() + numpy.asarray(pos)
 
-        if bgMk is None:
-            resMk = []
-        else:
-            resMk = []
-            fgPol = Polygon(resPa)
-            i = 0
-            while i < len(bgMk):
-                bgPol = Polygon(bgMk[i]['param'])
-                if fgPol.disjoin(bgPol) or fgPol.touches(bgPol):
-                    # completely isolate or outer_cut
-                    i += 1
-                    continue
-                for geo in bgPol.difference(fgPol):
-                    pass
+        if fgMk is not None:
+            resPa = fgMk['param'].copy() + numpy.asarray(pos) # fg final param
+            if bgMk is not None:
+                fgPol = Polygon(resPa)
+                frPol = box(0, 0, bg.size()[0], bg.size()[1])
+                for i in range(len(bgMk)):
+                    bgPol = Polygon(bgMk[i]['param'])
+                    if (not fgPol.intersects(bgPol)) or fgPol.touches(bgPol):
+                        # completely isolate or outer_cut
+                        resMk.append(copy.deepcopy(bgMk[i]))
+                    elif bgPol.contains(fgPol):
+                        raise Exception('Completely within relationship currently is not supported')
+                    elif not (fgPol.contains(bgPol) and fgPol.intersects(frPol) and fgPol.touches(frPol)):
+                        diff = bgPol.difference(fgPol)
 
+                        if isinstance(diff, Polygon):
+                            diff = [diff]
+                        for geo in diff:
+                            tmp = {}
+                            for k, v in bgMk[i].items():
+                                if k == 'param':
+                                    tmp['param'] = numpy.array(geo.exterior.coords)
+                                elif k == 'type':
+                                    tmp['type'] = 'polygon'
+                                else:
+                                    tmp[k] = copy.deepcopy(v)
+                            resMk.append(tmp)
 
-        resMk.append({"param": resPa, "shape": "polygon"})
-
+            resMk.append({'param': resPa, 'type': 'polygon'})
+        elif bgMk is not None:
+            resMk = copy.deepcopy(bgM)
+        return (resPx, resMk)
 
     def copyRegion(self, px: Image, mk) -> []:
         """
@@ -368,15 +377,14 @@ class PixelFactory:
             pxVaild = True
 
         # marking check
-        if not isinstance(mk, list):
-            mk = [dict]
-        if any(map(lambda sub: not isinstance(sub, dict), mk)):
-            print('Warnning: makrings should be a dict or a list of dicts')
-        elif any(map(lambda sub: sub.get('type') == None or sub.get('param') == None, mk)):
+        if not isinstance(mk, Dict):
+            print('Warnning: makring should be a dictionary')
+        elif mk.get('type') is None or mk.get('param') is None:
+            # numpy gets confused with == operator
             print('Warnning: markings should constain both keys \'type\' and \'param\'')
-        elif any(map(lambda sub: not isinstance(sub['param'], numpy.ndarray), mk)):
-            print('Warnning: markings\' keys \'param\' should accept numpy arrays')
-        elif any(map(lambda sub: not sub['type'] in self.supportedType, mk)):
+        elif not isinstance(mk['param'], numpy.ndarray):
+            print('Warnning: marking\'s keys \'param\' accept a numpy array')
+        elif not mk['type'] in self.supportedType:
             print('Warnning: markings type not supported')
         else:
             mkVaild = True
