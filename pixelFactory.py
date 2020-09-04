@@ -1,61 +1,19 @@
 import math
 import random
-from shapely.geometry import Polygon, LineString, Point, box, MultiPolygon
 import copy
-import re
 import numpy
+from shapely.geometry import Polygon, LineString, Point, box, MultiPolygon
 from PIL import Image, ImageDraw
-from typing import Union, List, Dict, Tuple
-
-class PixelUtil:
-    def __init__(arg):
-        pass
-    def getBound(self, mk) -> ():
-        """
-        return minimum bounding region, left and up use flooring function,
-        bottom and right use ceilling function
-
-        Parameter
-        ---------
-        mk:
-            one or a iterable of markings
-        """
-        if isinstance(mk, dict):
-            mk = [mk]
-        pts = []
-        for item in mk:
-            if item['type'] == 'point':
-                pts.append(item['param'])
-            elif item['type'] == 'line' or item['type'] == 'polygon':
-                pts.extend(item['param'])
-            elif item['type'] == 'ellipse':
-                # ellipse's x = a*cos(t)
-                # ellipse's y = b*cos(t)
-                x_shf, y_shf = item['param'][0]
-                a, b = item['param'][1]
-                pts.append(numpy.array([x_shf + a, y_shf])) # right
-                pts.append(numpy.array([x_shf, y_shf + b])) # top
-                pts.append(numpy.array([x_shf - a, y_shf])) # left
-                pts.append(numpy.array([x_shf, y_shf - b])) # bottom
-            else:
-                # ignore
-                pass
-
-        pts = numpy.array(pts)
-        x_min, y_min = numpy.floor(numpy.min(pts, axis=(0))).astype(numpy.int)
-        x_max, y_max = numpy.ceil(numpy.max(pts, axis=(0))).astype(numpy.int)
-        return (x_min, y_min, x_max, y_max)
-
+from typing import Union, List, Dict, Tuple, Any
 
 class PixelAlgo:
-    def __init__(self, _u:PixelUtil):
+    def __init__(self):
         self._2DRTM = lambda theta, x, y, dx, dy: (
             (x - dx) * math.cos(theta) + (y - dy) * math.sin(theta) + dx,
             (y - dy) * math.cos(theta) - (x - dx) * math.sin(theta) + dy,
         )
-        self._util = _u
 
-    def rotate(self, px: Image, mk, degree: float, expand=True) -> ():
+    def rotate(self, px: Image.Image, mk: Dict, degree: float, expand=True) -> Tuple:
         """
         Parameter
         ---------
@@ -65,7 +23,7 @@ class PixelAlgo:
         if expand:
             # expand img, make sure img does not suffer losses after
             # rotates
-            x_min, y_min, x_max, y_max = self._util.getBound(mk)
+            x_min, y_min, x_max, y_max = self.getBound(mk)
             side = math.ceil(math.sqrt((x_max - x_min) ** 2 + (y_max - y_min) ** 2))
             shf = numpy.array([(side - x_max + x_min) >> 1, (side - y_max + y_min) >> 1])
             px2 = Image.new("RGBA", (side, side), color=(0, 0, 0, 0))
@@ -83,7 +41,7 @@ class PixelAlgo:
             shf2 = numpy.array([side // 2, side // 2])
             for item in mk:
                 item['param'] = numpy.dot(item['param'] + shf - shf2, rtm2D) + shf2
-            bound = self._util.getBound(mk)
+            bound = self.getBound(mk)
 
             # remove extra paddings
             px = px.crop(bound)
@@ -94,7 +52,7 @@ class PixelAlgo:
         else:
             raise Exception("Not implemented")
 
-    def noise(self, px: Image, snr: float, n_type='bw') -> Image:
+    def noise(self, px: Image, snr: float, n_type='bw') -> Image.Image:
         """
         """
         if n_type == 'bw':
@@ -109,17 +67,20 @@ class PixelAlgo:
         img = Image.fromarray(px)
         return img
 
+    def getBound(self, mk: Dict):
+        x_min, y_min = numpy.min(mk['param'], axis=1)
+        x_max, y_max = numpy.max(mk['param'], axis=1)
+
 class PixelFactory:
+    supportedType = ['point', 'line', 'polygon', 'ellipse']
+
     def __init__(self):
         """
         https://blog.csdn.net/maitianpt/article/details/84983599
         """
-        self.supportedType = ['point', 'line', 'polygon', 'ellipse']
-        self._patt = None  # patterm to split marked objects
-        self._algo = None  # pixel processor
-        self._util = PixelUtil() # utility class
+        self._algo = PixelAlgo()  # pixel processor
 
-    def rotate(self, px: Image, mk, degree: float, expand=True) -> ():
+    def rotate(self, px: Image.Image, mk: Dict, degree: float, expand=True) -> ():
         """
         roate image
 
@@ -130,12 +91,7 @@ class PixelFactory:
         expand:
             if true, will make sure object will not suffer losses on edge
         """
-        if not self._algo:
-            self._algo = PixelAlgo(self._util)
-        if isinstance(mk, dict):
-            return self._algo.rotate(px, [mk], degree, expand)
-        else:
-            return self._algo.rotate(px, mk, degree, expand)
+        return self._algo.rotate(px, mk, degree, expand)
 
     def noise(self, px: Image, snr: float, n_type='bw') -> Image:
         """
@@ -149,8 +105,6 @@ class PixelFactory:
             type of noise
             `bw`, black and white aka. salt & pepper
         """
-        if not self._algo:
-            self._algo = PixelAlgo(self._util)
         return self._algo.noise(px, snr, n_type)
 
     def pasteRegion(self, bg: Image.Image, bgMk: List[Dict],
@@ -177,37 +131,8 @@ class PixelFactory:
         resPx.paste(fg, pos, fg.getchannel(3))
 
         if fgMk is not None:
-            resPa = fgMk['param'].copy() + numpy.asarray(pos) # fg final param
-            if bgMk is not None:
-                fgPol = Polygon(resPa)
-                frPol = box(0, 0, bg.size()[0], bg.size()[1])
-                for i in range(len(bgMk)):
-                    bgPol = Polygon(bgMk[i]['param'])
-                    if (not fgPol.intersects(bgPol)) or fgPol.touches(bgPol):
-                        # completely isolate or outer_cut
-                        resMk.append(copy.deepcopy(bgMk[i]))
-                    elif bgPol.contains(fgPol):
-                        raise Exception('Completely within relationship currently is not supported')
-                    elif not (fgPol.contains(bgPol) and fgPol.intersects(frPol) and fgPol.touches(frPol)):
-                        diff = bgPol.difference(fgPol)
-
-                        if isinstance(diff, Polygon):
-                            diff = [diff]
-                        for geo in diff:
-                            tmp = {}
-                            for k, v in bgMk[i].items():
-                                if k == 'param':
-                                    tmp['param'] = numpy.array(geo.exterior.coords)
-                                elif k == 'type':
-                                    tmp['type'] = 'polygon'
-                                else:
-                                    tmp[k] = copy.deepcopy(v)
-                            resMk.append(tmp)
-
-            resMk.append({'param': resPa, 'type': 'polygon'})
-        elif bgMk is not None:
-            resMk = copy.deepcopy(bgM)
-        return (resPx, resMk)
+            resPa = fgMk['param'].copy() + numpy.asarray(pos) # fg points
+            return (resPx, resMk)
 
     def copyRegion(self, px: Image, mk) -> []:
         """
@@ -230,7 +155,7 @@ class PixelFactory:
                 tmp['param'] -= shf
         return (px, final_mk)
 
-    def parseToCsts(self, mk, imgSize) -> ():
+    def parseToCsts(self, mk, imgSize) -> Tuple:
         """
         return a list of constrains in the format of
         [[Polygon(), ], [LineString(), ], [Point()], Polygon()]
@@ -333,63 +258,6 @@ class PixelFactory:
         else:
             raise Exception('Not implemented')
 
-    def constrainsPlace(
-        self, pts: [], csts, imgSize=None, overlap=0.0, within=1.0
-    ) -> []:
-        raise Exception("Not implemented")
-        """
-        place new shape according to constrains
-        Note, this function does not repeat functionality of `constrainsCheck()`
-
-        Parameters detail see `constrainsCheck()`
-        """
-        if len(pts) <= 2:
-            # ???
-            return
-
-        poly, line, poin, fram = None, None, None, None
-        if type(csts[-1]) is Polygon:
-            poly, line, poin, fram = csts[0], csts[1], csts[2], csts[3]
-        else:
-            poly, line, poin, fram = self.parseToCsts(csts, imgSize)
-
-        new = Polygon(pts)
-        if any(map(lambda pol: pol.intersection(new).area == min(pol.area, new.area), poly)):
-            raise Warning("An polygon completely within another polygon is unsupported")
-        else:
-            i = 0
-            while i < len(poly):
-                diff = poly[i].difference(new)
-                print(diff)
-
-    def paramCheck(self, px, mk) -> bool:
-        """
-        validate if image and markings meets PixelFactory's requirements
-        """
-        pxVaild = False
-        mkVaild = False
-        # image check
-        if not isinstance(px, Image.Image):
-            print('Warnning: image should be a PIL image')
-        elif px.mode != 'RGBA':
-            print('Warnning: image should be in RGBA mode')
-        else:
-            pxVaild = True
-
-        # marking check
-        if not isinstance(mk, Dict):
-            print('Warnning: makring should be a dictionary')
-        elif mk.get('type') is None or mk.get('param') is None:
-            # numpy gets confused with == operator
-            print('Warnning: markings should constain both keys \'type\' and \'param\'')
-        elif not isinstance(mk['param'], numpy.ndarray):
-            print('Warnning: marking\'s keys \'param\' accept a numpy array')
-        elif not mk['type'] in self.supportedType:
-            print('Warnning: markings type not supported')
-        else:
-            mkVaild = True
-
-        return pxVaild and mkVaild
 
     def _copy(self, px: Image, mk) -> []:
         """
@@ -406,7 +274,7 @@ class PixelFactory:
         # find the boundary of cut region
         x_min, y_min, x_max, y_max = self._util.getBound(mk)
         # point and line don't have any area
-        tmp = filter(lambda tmp: tmp["type"] in self.supportedType[2:] , mk)
+        tmp = filter(lambda tmp: tmp["type"] in supportedType[2:] , mk)
         assert tmp, "Such shape is not unsupported for copy"
 
         px = px.crop((x_min, y_min, x_max, y_max))
@@ -414,24 +282,72 @@ class PixelFactory:
         return (px, shf)
 
 
+    def _pastePolyToPoly(self, bgMk: List[Dict], fgMk: Dict, frSize: Tuple) -> List[Dict]:
+        """
+        paste foreground polygon on background polygon at `pos` position
+
+        Parameter
+        ---------
+        frSize
+            frame size of the image
+        """
+        fgPol = Polygon(fgMk['param'])            # foreground polygon
+        frPol = box(0, 0, frSize[0], frSize[1])   # image frame polygon
+        resMk = []
+
+        # ignore any foreground that is out side of image frame or
+        # background makring that is empty
+        ## NOTE: a.difference(b) is slower compare to binary predicates
+        if not (frPol.disjoint(fgPol) or frPol.touches(fgPol) or bgMk is None):
+            if frPol.overlaps(fgPol):
+                # partial of foreground is outside of frame
+                fgPol = frPol.intersection(fgPol)
+            for mk in bgMk:
+                bgPol = Polygon(mk['param'])
+                obj_cp = None # object that needs copy
+                if fgPol.disjoint(bgPol) or fgPol.touches(bgPol):
+                    # completely isolate or outer_cut
+                    obj_cp = bgPol
+                elif fgPol.contains(bgPol):
+                    # foreground cover background completely
+                    obj_cp = fgPol
+                else:
+                    obj_cp = bgPol.difference(fgPol)
+
+                if isinstance(obj_cp, Polygon):
+                    obj_cp = [obj_cp]
+                for geo in obj_cp:
+                    param = numpy.array(geo.exterior.coords)
+                    if len(geo.interiors) > 0:
+                        param = numpy.append([param], geo.interiors)
+                    resMk.append({'param': param, 'type': 'polygon'})
+            resMk.append({
+                'param': fgMk['param'], 'type': 'polygon'
+            })
+        elif bgMk is not None:
+            return copy.deepcopy(bgMk)
+
+        return resMk
+
+
     def masking(self, px: Image, gp: list, alpha=0):
         """
-            create mask from pts, pixels' alpha bound by points is set to
-            `alpha`, otherwise set to 255
+        create mask from pts, pixels' alpha bound by points is set to
+        `alpha`, otherwise set to 255
 
-            Parameter
-            ---------
-            gp
-                group of markings of px
-            alpha
-                tansparency of pixel that outside of mask region,
-                range from 0 to 255 inclusively
+        Parameter
+        ---------
+        gp
+            group of markings of px
+        alpha
+            tansparency of pixel that outside of mask region,
+            range from 0 to 255 inclusively
         """
         # create a blank mask in L mode, then draw the polygon according to
         # points, pixel within or along the polygon is visable
         mask = Image.new("L", px.size, color=alpha)
         for mk in gp:
-            if mk['type'] in self.supportedType[: 2]:
+            if mk['type'] in supportedType[: 2]:
                 continue
             ImageDraw.Draw(mask).polygon(mk['param'].flatten().tolist(), outline=255, fill=255)
 
